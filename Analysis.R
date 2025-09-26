@@ -1,0 +1,420 @@
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(emmeans)
+library(scales)
+setwd("/Users/jannawilloughby/Library/CloudStorage/GoogleDrive-janna.willoughby@gmail.com/My Drive/Willoughby lab/projects - active/BSNB grow extract comparison/PLOS_submit/")
+
+#### Solid media growth Analysis ####
+
+# growth rate analysis and plotting
+# STEP 1: Load fungal growth data
+growth_data <- read.csv("solidmediagrwth.csv")
+
+media_summary <- growth_data %>%
+  group_by(Media) %>%
+  summarise(Mean_diameter = mean(diameter, na.rm = TRUE))
+media_summary
+
+# STEP 2: Calculate growth and growth rate per Replicate
+# Summarise average growth per Media across all weeks
+growth_data <- growth_data %>%
+  arrange(Media, Week) %>%  # arrange by Media and Week
+  group_by(Media) %>%
+  mutate(Growth = diameter,
+         GrowthRate = Growth / (Week)) 
+
+growth_summary <- growth_data %>%
+  group_by(Media) %>%
+  summarise(
+    MeanGrowth = mean(Growth, na.rm = TRUE),
+    TotalGrowth = sum(Growth, na.rm = TRUE),
+    .groups = "drop"
+  )
+print(growth_summary)
+
+# Step 3: Summarise average growth per Media across all weeks
+growth_summary_rate <- growth_data %>%
+  group_by( Media) %>%
+  summarise(
+    Initial = first(diameter),
+    Final = last(diameter),
+    Duration = last(Week) - first(Week),
+    .groups = "drop"
+  ) %>%
+  mutate(GrowthRate = (Final - Initial) / Duration)
+print(growth_summary_rate)
+
+# STEP 4: Statistical analysis — Growth across Media Types
+# Linear model
+growth_lm <- lm(GrowthRate ~ Media-1, data = growth_data)
+summary(growth_lm)
+
+# Plot marginal means (EMMs) and confidence intervals
+emm_results <- emmeans(growth_lm, specs = "Media")
+emm_results
+emm_df <- as.data.frame(emm_results)
+
+# Define custom colors for media
+media_colors <- c(
+  "MEA" = "dodgerblue3",
+  "PDA" = "chartreuse3",
+  "SDA" = "goldenrod3",
+  "YEPD" = "firebrick3"
+)
+
+# Plot
+ggplot() +
+  # Raw data points (jittered, color-coded by Media)
+  geom_jitter(data = growth_data, 
+              aes(x = Media, y = GrowthRate, color = Media),
+              width = 0.2, alpha = 0.6, size = 2) +
+  
+  # Estimated means (black diamonds)
+  geom_point(data = emm_df, 
+             aes(x = Media, y = emmean),
+             size = 4, shape = 18, color = "black") +  # no aes(color = ...) here
+  
+  # Error bars (black)
+  geom_errorbar(data = emm_df, 
+                aes(x = Media, ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_color_manual(values = media_colors) +
+  labs(title = "",
+       x = "Media Type",
+       y = "Growth Rate (mm/week)",
+       color = "Media") +
+  theme_classic()
+
+# total growth analysis
+
+# STEP 1: Extract final diameter per replicate
+growth_data <- growth_data %>%
+  mutate(Replicate = interaction(Media, Week, diameter, drop = TRUE)) %>%
+  group_by(Media, Replicate) %>%
+  filter(Week == max(Week)) %>%
+  ungroup()
+
+total_growth_solid <- growth_data %>%
+  group_by(Media, Replicate) %>%
+  filter(Week == max(Week, na.rm = TRUE)) %>%
+  ungroup() %>%
+  dplyr::select(Media, Replicate, TotalGrowth = diameter)
+
+# STEP 2: Run linear model
+lm_total_solid <- lm(TotalGrowth ~ Media - 1, data = total_growth_solid)
+summary(lm_total_solid)
+emm_total_solid <- emmeans(lm_total_solid, ~ Media)
+emm_df_total_solid <- as.data.frame(emm_total_solid)
+
+# plot
+ggplot() +
+  # Reference line at zero
+  geom_hline(yintercept = 0, linetype = "solid", color = "grey50", linewidth = 0.3) +
+  
+  # Bars for means
+  geom_col(data = emm_df_total_solid, 
+           aes(x = Media, y = emmean, fill = Media),
+           width = 0.6, alpha = 0.4, color = NA) +
+  
+  # Jittered raw values
+  geom_jitter(data = total_growth_solid, 
+              aes(x = Media, y = TotalGrowth, color = Media),
+              width = 0.2, alpha = 0.6, size = 2) +
+  
+  # Mean diamonds
+  geom_point(data = emm_df_total_solid, 
+             aes(x = Media, y = emmean),
+             size = 4, shape = 18, color = "black") +
+  
+  # Error bars
+  geom_errorbar(data = emm_df_total_solid, 
+                aes(x = Media, ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_color_manual(values = media_colors) +
+  scale_fill_manual(values = media_colors) +
+  labs(
+    title = "Final Colony Diameter by Solid Media Type",
+    x = "Media Type",
+    y = "Final Diameter (mm)",
+    color = "Media",
+    fill = "Media"
+  ) +
+  theme_classic()
+
+
+#### Broth media growth Analysis ####
+# Load data
+broth_data <- read.csv("Brothgrowth.csv")
+
+# growth rate analysis and plotting
+# STEP 1: Calculate growth rate (assume weekly data, so week intervals = 1)
+broth_data <- broth_data %>%
+  arrange(Sample, Media_type, Week)
+
+# Compute GrowthRate only when Week gap is non-zero
+broth_data <- broth_data %>%
+  group_by(Sample, Media_type) %>%
+  mutate(
+    WeekDiff = Week - lag(Week),
+    Growth = weight_g - lag(weight_g),
+    GrowthRate = ifelse(WeekDiff > 0, Growth / WeekDiff, NA_real_)
+  ) %>%
+  ungroup()
+
+# STEP 2: Remove NAs generated by lag
+broth_data <- broth_data %>% filter(!is.na(GrowthRate))
+
+# STEP 3: Linear model for total growth
+growth_lm_broth <- lm(GrowthRate ~ Media_type-1, data = broth_data)
+summary(growth_lm_broth)
+
+# Estimated marginal means for plotting
+emm_broth <- emmeans(growth_lm_broth, ~ Media_type)
+emm_df_broth <- as.data.frame(emm_broth)
+
+# Custom colors (same as before, if media types match)
+media_colors <- c(
+  "ME" = "dodgerblue3",
+  "PD" = "chartreuse3",
+  "SD" = "goldenrod3",
+  "YEPD" = "firebrick3"
+)
+
+# Plot
+ggplot() +
+  # Raw data points: individual GrowthRates per sample/media
+  geom_jitter(data = broth_data, aes(x = Media_type, y = GrowthRate, color = Media_type),
+              width = 0.2, alpha = 0.6, size = 2) +
+  
+  # Estimated means (diamonds)
+  geom_point(data = emm_df_broth, aes(x = Media_type, y = emmean),
+             size = 4, shape = 18, color = "black") +
+  
+  # Error bars for estimated means
+  geom_errorbar(data = emm_df_broth, aes(x = Media_type, ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_color_manual(values = media_colors) +
+  labs(
+    title = "Fungal Growth Rate by Media Type",
+    x = "Media Type",
+    y = "Growth Rate (g/week)",
+    color = "Media Type"
+  ) +
+  theme_classic()
+
+# Total growth analysis and plotting
+# STEP 1: Remove duplicate total growth values
+total_growth_data <- dplyr::select(broth_data, Sample, Media_type, Total_Weightat3weeks) %>%
+  distinct()
+
+# STEP 2: Fit linear model for total growth
+lm_total_growth <- lm(Total_Weightat3weeks ~ Media_type - 1, data = total_growth_data)
+summary(lm_total_growth)
+emm_total <- emmeans(lm_total_growth, ~ Media_type)
+emm_df_total <- as.data.frame(emm_total)
+
+# Plot total growth
+ggplot() +
+  # Reference line at zero
+  geom_hline(yintercept = 0, linetype = "solid", color = "grey50", linewidth = 0.3) +
+  
+  # Bar representing the mean
+  geom_col(data = emm_df_total, 
+           aes(x = Media_type, y = emmean, fill = Media_type),
+           width = 0.6, alpha = 0.4, color = NA) +  # semi-transparent, no border
+  
+  # Raw data points
+  geom_jitter(data = total_growth_data, 
+              aes(x = Media_type, y = Total_Weightat3weeks, color = Media_type),
+              width = 0.2, alpha = 0.6, size = 2) +
+  
+  # Error bars
+  geom_errorbar(data = emm_df_total, 
+                aes(x = Media_type, ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_color_manual(values = media_colors) +
+  scale_fill_manual(values = media_colors) +  # use same colors for bars
+  labs(
+    title = "Total Biomass After 3 Weeks by Media Type",
+    x = "Media Type",
+    y = "Total Biomass (g)",
+    color = "Media Type",
+    fill = "Media Type"
+  ) +
+  theme_classic()
+
+#### DNA Extraction Results ####
+
+# quantus concentration
+# STEP 1: Load DNA extraction results
+dna_data <- read.csv("DNA_measures.csv")
+colnames(dna_data) <- make.names(colnames(dna_data))
+dna_data$Protocol <- as.factor(dna_data$Protocol)
+dna_data$Media_type <- as.factor(dna_data$Media_type)
+
+# Summary statistics
+dna_summary <- dna_data %>%
+  group_by(Protocol) %>%
+  summarise(
+    Mean_Concentration = mean(Quatus_2ng.ul, na.rm = TRUE),
+    SD_Concentration = sd(Quatus_2ng.ul, na.rm = TRUE),
+    n = sum(!is.na(Quatus_2ng.ul)),
+    SE_Concentration = SD_Concentration / sqrt(n)
+  )
+print(dna_summary)
+
+#STEP 2: Fit linear model 
+dna_lm <- lm(Quatus_2ng.ul ~ Protocol + Media_type-1, data = dna_data)
+summary(dna_lm)
+emm_dna <- emmeans(dna_lm, ~ Protocol)
+emm_nested <- emmeans(dna_lm, ~ Protocol | Media_type)
+emm_nested_df <- as.data.frame(emm_nested)
+
+# remove PDA from plotting
+dna_data_filtered <- dna_data %>%
+  filter(Media_type != "PDA")
+emm_nested_df_filtered <- emm_nested_df %>%
+  filter(Media_type != "PDA")
+
+# plot
+
+media_colors_filtered <- c(
+  "ME" = "dodgerblue3",
+  "SD" = "goldenrod3",
+  "PD" = "chartreuse3",
+  "YEPD" = "firebrick3"
+)
+
+# Reorder factor levels 
+dna_data_filtered$Protocol <- factor(dna_data_filtered$Protocol)
+dna_data_filtered$Media_type <- factor(dna_data_filtered$Media_type, levels = names(media_colors_filtered))
+emm_nested_df_filtered$Protocol <- factor(emm_nested_df_filtered$Protocol)
+emm_nested_df_filtered$Media_type <- factor(emm_nested_df_filtered$Media_type, levels = names(media_colors_filtered))
+
+ggplot() +
+  
+  geom_col(data = emm_nested_df_filtered, 
+           aes(x = Protocol, y = emmean, fill = Media_type),
+           position = position_dodge(width = 0.8),
+           width = 0.6, alpha = 0.3, color = NA) +
+  
+  geom_jitter(data = dna_data_filtered, 
+              aes(x = Protocol, y = Quatus_2ng.ul, color = Media_type),
+              position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8),
+              alpha = 0.6, size = 2) +
+  
+  geom_point(data = emm_nested_df_filtered, 
+             aes(x = Protocol, y = emmean, group = Media_type),
+             shape = 18, size = 3, color = "black",
+             position = position_dodge(width = 0.8)) +
+  
+  geom_errorbar(data = emm_nested_df_filtered, 
+                aes(x = Protocol, ymin = lower.CL, ymax = upper.CL, group = Media_type),
+                width = 0.2, color = "black",
+                position = position_dodge(width = 0.8)) +
+  
+  scale_color_manual(values = media_colors_filtered) +
+  scale_fill_manual(values = media_colors_filtered) +
+  labs(
+    title = "DNA Yield by Extraction Protocol and Media Type (Excluding PDA)",
+    x = "Extraction Protocol",
+    y = "DNA Concentration (ng/µL)",
+    color = "Media Type",
+    fill = "Media Type"
+  ) +
+  scale_x_discrete(labels = c(
+    "CTAB_SDS" = "CTAB+SDS",
+    "Hisalt_PVP" = "High-salt+PVP",
+    "Hisalt_SDS" = "High-salt+SDS",
+    "Qiagen" = "Qiagen"
+  )) +
+  
+  theme_classic()
+
+# nanodrop 260/280
+dna_summary_purity <- dna_data %>%
+  group_by(Protocol) %>%
+  summarise(
+    Mean_Purity = mean(Absor_260.280, na.rm = TRUE),
+    SD_Purity = sd(Absor_260.280, na.rm = TRUE),
+    n = sum(!is.na(Absor_260.280)),
+    SE_Purity = SD_Purity / sqrt(n)
+  )
+print(dna_summary_purity)
+
+# plot
+media_colors_filtered <- c(
+  "ME" = "dodgerblue3",
+  "SD" = "goldenrod3",
+  "PD" = "chartreuse3",
+  "YEPD" = "firebrick3"
+)
+
+# STEP 1: linear model and filtering PDA
+lm_purity <- lm(Absor_260.280 ~ Protocol + Media_type - 1, data = dna_data)
+summary(lm_purity)
+emm_purity <- emmeans(lm_purity, ~ Protocol)
+emm_purity_nested <- emmeans(lm_purity, ~ Protocol | Media_type)
+summary(emm_purity_nested)
+emm_purity_nested_df <- as.data.frame(emm_purity_nested)
+
+dna_data_purity_filtered <- dna_data %>%
+  filter(Media_type != "PDA")
+emm_purity_nested_df_filtered <- emm_purity_nested_df %>%
+  filter(Media_type != "PDA")
+
+
+# Reorder factor levels
+dna_data_purity_filtered$Protocol <- factor(dna_data_purity_filtered$Protocol)
+dna_data_purity_filtered$Media_type <- factor(dna_data_purity_filtered$Media_type, levels = names(media_colors_filtered))
+emm_purity_nested_df_filtered$Protocol <- factor(emm_purity_nested_df_filtered$Protocol)
+emm_purity_nested_df_filtered$Media_type <- factor(emm_purity_nested_df_filtered$Media_type, levels = names(media_colors_filtered))
+
+# plot
+ggplot() +
+  # Optional: Add dashed horizontal reference line for ideal purity
+  geom_hline(yintercept = 1.8, linetype = "dashed", color = "grey40", linewidth = 0.4) +
+  
+  # Raw data points
+  geom_jitter(data = dna_data_purity_filtered, 
+              aes(x = Protocol, y = Absor_260.280, color = Media_type),
+              position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8),
+              alpha = 0.6, size = 2) +
+  
+  # Estimated marginal means (black diamonds)
+  geom_point(data = emm_purity_nested_df_filtered, 
+             aes(x = Protocol, y = emmean, group = Media_type),
+             shape = 18, size = 3, color = "black",
+             position = position_dodge(width = 0.8)) +
+  
+  # Error bars (black)
+  geom_errorbar(data = emm_purity_nested_df_filtered, 
+                aes(x = Protocol, ymin = lower.CL, ymax = upper.CL, group = Media_type),
+                width = 0.2, color = "black",
+                position = position_dodge(width = 0.8)) +
+  
+  # Use filtered color palette
+  scale_color_manual(values = media_colors_filtered) +
+  
+  # Set y-axis maximum to 10
+  coord_cartesian(ylim = c(-1, 8)) +  # use coord_cartesian to avoid clipping
+  
+  labs(
+    title = "DNA Purity (260/280)",
+    x = "Extraction Protocol",
+    y = "260/280 Absorbance Ratio",
+    color = "Media Type"
+  ) +
+  scale_x_discrete(labels = c(
+    "CTAB_SDS" = "CTAB+SDS",
+    "Hisalt_PVP" = "High-salt+PVP",
+    "Hisalt_SDS" = "High-salt+SDS",
+    "Qiagen" = "Qiagen"
+  )) +
+  theme_classic()
+
